@@ -1,0 +1,56 @@
+[project]
+name = "mimirmap"
+version = "0.1.0"
+description = "Estimate GPS coordinates from monocular images using MiDaS and geometry"
+authors = [{name = "Joaquin", email = "joaquin.olivera@gmail.com"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=1.7.1",
+    "opencv-python>=4.5.0",
+    "numpy>=1.19.0",
+    "scipy>=1.6.0",
+    "matplotlib>=3.3.0",
+    "pyproj>=3.0.0"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/joaquinolivera/Mimirmap"
+"Bug Tracker" = "https://github.com/joaquinolivera/Mimirmap/issues"
+
+[project.scripts]
+mimirmap = "mimirmap.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["mimirmap"]
+package-dir = {"" = "src"}
+
+[tool.black]
+line-length = 100
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"

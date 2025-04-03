@@ -1,0 +1,1738 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+================================================================
+File Summary
+================================================================
+
+Purpose:
+--------
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+
+File Format:
+------------
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Multiple file entries, each consisting of:
+  a. A separator line (================)
+  b. The file path (File: path/to/file)
+  c. Another separator line
+  d. The full contents of the file
+  e. A blank line
+
+Usage Guidelines:
+-----------------
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+
+Notes:
+------
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+
+Additional Info:
+----------------
+
+================================================================
+Directory Structure
+================================================================
+examples/
+  demo.py
+src/
+  mimirmap/
+    cli.py
+    core.py
+tests/
+  test_core.py
+.gitignore
+LICENSE
+pyproject.toml
+README.md
+
+================================================================
+Files
+================================================================
+
+================
+File: examples/demo.py
+================
+#!/usr/bin/env python3
+"""
+MimirMap Example Script
+
+This script demonstrates how to use the MimirMap library to estimate GPS coordinates
+of objects in monocular images using MiDaS depth estimation and geometric calculations.
+"""
+
+import os
+import argparse
+import cv2
+import matplotlib.pyplot as plt
+from mimirmap.core import (
+    load_midas_model,
+    estimate_depth,
+    calculate_depth_confidence,
+    estimate_object_gps,
+    save_depth_heatmap,
+    calculate_ground_distance,
+    get_fov_from_camera_params
+)
+
+def demo_interactive_mode(image_path, camera_lat, camera_lon, camera_alt, 
+                          camera_model, camera_height, pitch, yaw, roll):
+    """
+    Demonstrate interactive mode where the user can click on the image to get GPS coordinates.
+    """
+    # Load image
+    img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f"Could not load image from {image_path}")
+    
+    # Define window name
+    window_name = "MimirMap - Click to get GPS coordinates (Press ESC to exit)"
+    
+    # Load MiDaS model (do this once)
+    print("Loading MiDaS model (this may take a moment)...")
+    model, transform = load_midas_model()
+    
+    # Estimate depth (do this once)
+    print("Estimating depth map...")
+    _, depth_map, reference_pixel, reference_distance = estimate_depth(
+        image_path, model, transform,
+        auto_calibrate=True,
+        camera_height=camera_height,
+        pitch_degrees=pitch,
+        gopro_model=camera_model
+    )
+    
+    # Function to handle mouse clicks
+    clicks = []
+    def on_mouse_click(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            clicks.append((x, y))
+            
+            # Get depth at clicked point
+            depth_value = depth_map[y, x]
+            confidence = calculate_depth_confidence(x, y, depth_map)
+            
+            # Calculate distance using alternative method for comparison
+            h, w = img.shape[:2]
+            fov = get_fov_from_camera_params(camera_model)
+            geom_dist = calculate_ground_distance(y, h, camera_height, pitch, fov["vertical"])
+            
+            # Estimate GPS
+            lat, lon, alt, conf, dist, _ = estimate_object_gps(
+                image_path, x, y,
+                camera_lat, camera_lon, camera_alt,
+                camera_model, yaw, pitch, roll, camera_height,
+                model, transform,
+                visualize=False
+            )
+            
+            # Annotate the clicked point
+            img_copy = img.copy()
+            
+            # Draw all previous clicks
+            for i, (cx, cy) in enumerate(clicks):
+                cv2.circle(img_copy, (cx, cy), 5, (0, 0, 255), -1)
+                cv2.putText(img_copy, f"#{i+1}", (cx+5, cy-5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
+            # Display information
+            print(f"\nPoint #{len(clicks)} at ({x}, {y}):")
+            print(f"  Depth: {depth_value:.2f}m (confidence: {confidence:.2f})")
+            print(f"  Ground geometry distance: {geom_dist:.2f}m")
+            print(f"  Estimated distance: {dist:.2f}m")
+            print(f"  Estimated GPS: {lat:.6f}, {lon:.6f}, {alt:.2f}m")
+            print(f"  Google Maps: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+            
+            # Update display
+            cv2.imshow(window_name, img_copy)
+    
+    # Create window and set mouse callback
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, on_mouse_click)
+    
+    # Show depth map in a separate window
+    depth_img = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX).astype('uint8')
+    depth_colored = cv2.applyColorMap(depth_img, cv2.COLORMAP_INFERNO)
+    cv2.imshow("Depth Map", depth_colored)
+    
+    # Show the image and wait for clicks
+    cv2.imshow(window_name, img)
+    print("Click on the image to estimate GPS coordinates. Press ESC to exit.")
+    while True:
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:  # ESC key
+            break
+    
+    # Clean up
+    cv2.destroyAllWindows()
+
+def demo_batch_mode(image_path, points, camera_lat, camera_lon, camera_alt, 
+                    camera_model, camera_height, pitch, yaw, roll, output_dir):
+    """
+    Demonstrate batch mode where GPS coordinates are estimated for a list of points.
+    """
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Load MiDaS model
+    print("Loading MiDaS model...")
+    model, transform = load_midas_model()
+    
+    # Process each point
+    results = []
+    for i, (x, y) in enumerate(points):
+        print(f"\nProcessing point #{i+1} at ({x}, {y})...")
+        
+        # Estimate GPS with visualizations
+        lat, lon, alt, confidence, distance, visualizations = estimate_object_gps(
+            image_path, x, y,
+            camera_lat, camera_lon, camera_alt,
+            camera_model, yaw, pitch, roll, camera_height,
+            model, transform,
+            visualize=True
+        )
+        
+        # Store results
+        results.append({
+            'point_id': i+1,
+            'coordinates': (x, y),
+            'gps': (lat, lon, alt),
+            'distance': distance,
+            'confidence': confidence,
+            'visualizations': visualizations
+        })
+        
+        # Copy visualizations to output directory with numbered filenames
+        for vis_type, vis_path in visualizations.items():
+            if vis_path and os.path.exists(vis_path):
+                ext = os.path.splitext(vis_path)[1]
+                new_path = os.path.join(output_dir, f"point{i+1}_{vis_type}{ext}")
+                cv2.imwrite(new_path, cv2.imread(vis_path))
+        
+        # Print results
+        print(f"  Estimated distance: {distance:.2f}m")
+        print(f"  Estimated GPS: {lat:.6f}, {lon:.6f}, {alt:.2f}m")
+        print(f"  Confidence: {confidence:.2f}")
+        print(f"  Google Maps: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+    
+    # Create a summary visualization
+    img = cv2.imread(image_path)
+    for result in results:
+        x, y = result['coordinates']
+        point_id = result['point_id']
+        distance = result['distance']
+        
+        # Draw circle and add label
+        cv2.circle(img, (x, y), 8, (0, 0, 255), -1)
+        cv2.putText(img, f"#{point_id}: {distance:.1f}m", (x+10, y-10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+    
+    # Save summary image
+    summary_path = os.path.join(output_dir, "summary.jpg")
+    cv2.imwrite(summary_path, img)
+    print(f"\nSaved summary image to: {summary_path}")
+    
+    # Create depth map visualization
+    _, depth_map = estimate_depth(image_path, model, transform)[:2]
+    depth_path = os.path.join(output_dir, "depth_map.jpg")
+    save_depth_heatmap(depth_map, depth_path)
+    print(f"Saved depth map to: {depth_path}")
+    
+    return results
+
+def main():
+    parser = argparse.ArgumentParser(description="MimirMap Example Script")
+    parser.add_argument("image_path", type=str, help="Path to input image")
+    parser.add_argument("--lat", type=float, default=-34.636059, help="Camera latitude")
+    parser.add_argument("--lon", type=float, default=-58.706453, help="Camera longitude")
+    parser.add_argument("--alt", type=float, default=50.0, help="Camera altitude (meters)")
+    parser.add_argument("--camera-model", type=str, default="HERO8", help="Camera model")
+    parser.add_argument("--camera-height", type=float, default=1.4, help="Camera height (meters)")
+    parser.add_argument("--pitch", type=float, default=12.0, help="Camera pitch (degrees)")
+    parser.add_argument("--yaw", type=float, default=0.0, help="Camera yaw (degrees)")
+    parser.add_argument("--roll", type=float, default=0.0, help="Camera roll (degrees)")
+    parser.add_argument("--mode", type=str, choices=["interactive", "batch"], 
+                       default="interactive", help="Demo mode")
+    parser.add_argument("--points", type=str, default="", 
+                       help="Points for batch mode, format: 'x1,y1;x2,y2;...'")
+    parser.add_argument("--output-dir", type=str, default="./output", 
+                       help="Output directory for visualizations")
+    
+    args = parser.parse_args()
+    
+    print("\n===== MimirMap Demo =====")
+    print(f"Image: {args.image_path}")
+    print(f"Camera position: {args.lat}, {args.lon}, {args.alt}m")
+    print(f"Camera model: {args.camera_model}")
+    print(f"Camera height: {args.camera_height}m")
+    print(f"Camera orientation: Yaw={args.yaw}°, Pitch={args.pitch}°, Roll={args.roll}°")
+    print(f"Mode: {args.mode}")
+    
+    if args.mode == "interactive":
+        demo_interactive_mode(
+            args.image_path, args.lat, args.lon, args.alt,
+            args.camera_model, args.camera_height, args.pitch, args.yaw, args.roll
+        )
+    else:  # batch mode
+        if not args.points:
+            print("Error: Batch mode requires --points argument")
+            return
+        
+        # Parse points string (format: x1,y1;x2,y2;...)
+        try:
+            point_list = []
+            for point_str in args.points.split(';'):
+                if point_str:
+                    x, y = map(int, point_str.split(','))
+                    point_list.append((x, y))
+            
+            if not point_list:
+                raise ValueError("No valid points found")
+        except Exception as e:
+            print(f"Error parsing points: {e}")
+            print("Format should be: x1,y1;x2,y2;...")
+            return
+        
+        print(f"Processing {len(point_list)} points: {point_list}")
+        demo_batch_mode(
+            args.image_path, point_list,
+            args.lat, args.lon, args.alt,
+            args.camera_model, args.camera_height, args.pitch, args.yaw, args.roll,
+            args.output_dir
+        )
+    
+    print("\nDemo completed!")
+
+if __name__ == "__main__":
+    main()
+
+================
+File: src/mimirmap/cli.py
+================
+import argparse
+import os
+from mimirmap.core import (
+    load_midas_model,
+    estimate_depth,
+    get_depth_at_pixel,
+    calculate_depth_confidence,
+    estimate_distance_from_depth,
+    calculate_ground_distance,
+    project_gps,
+    annotate_image,
+    get_fov_from_camera_params,
+    save_depth_heatmap,
+    estimate_object_gps
+)
+import cv2
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Estimate object distance and GPS from monocular image",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Required arguments
+    parser.add_argument("image_path", type=str, help="Path to input image")
+    parser.add_argument("x", type=int, help="X coordinate of the object in image")
+    parser.add_argument("y", type=int, help="Y coordinate of the object in image")
+    parser.add_argument("latitude", type=float, help="Camera latitude")
+    parser.add_argument("longitude", type=float, help="Camera longitude")
+    
+    # Optional arguments with defaults
+    parser.add_argument("--output-dir", type=str, default="./output", 
+                        help="Directory to save output files")
+    parser.add_argument("--altitude", type=float, default=0.0,
+                        help="Camera altitude in meters")
+    parser.add_argument("--camera-height", type=float, default=1.4,
+                        help="Camera height above ground in meters")
+    parser.add_argument("--pitch", type=float, default=12.0,
+                        help="Camera pitch in degrees (downward tilt)")
+    parser.add_argument("--yaw", type=float, default=0.0,
+                        help="Camera yaw in degrees (0=North, 90=East)")
+    parser.add_argument("--roll", type=float, default=0.0,
+                        help="Camera roll in degrees")
+    parser.add_argument("--camera-model", type=str, default="HERO8",
+                        help="Camera model (HERO7, HERO8, HERO9, HERO10)")
+    parser.add_argument("--method", type=str, choices=["auto", "geometry", "depth"], 
+                        default="auto", help="Method to estimate distance")
+    parser.add_argument("--scale", type=float, default=1.0,
+                        help="Scale factor for depth estimation (only used with --method=depth)")
+    parser.add_argument("--save-depth", action="store_true",
+                        help="Save depth map visualization")
+    parser.add_argument("--save-3d", action="store_true",
+                        help="Save 3D position visualization")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print detailed information")
+
+    args = parser.parse_args()
+
+    # Make sure output directory exists
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    if args.verbose:
+        print(f"Processing image: {args.image_path}")
+        print(f"Target coordinates: ({args.x}, {args.y})")
+        print(f"Camera GPS: {args.latitude}, {args.longitude}, {args.altitude}m")
+        print(f"Camera orientation: Yaw={args.yaw}°, Pitch={args.pitch}°, Roll={args.roll}°")
+        print(f"Camera model: {args.camera_model}")
+        print(f"Camera height above ground: {args.camera_height}m")
+    
+    # Calculate output paths
+    base_filename = os.path.splitext(os.path.basename(args.image_path))[0]
+    annotated_path = os.path.join(args.output_dir, f"{base_filename}_annotated.jpg")
+    depth_path = os.path.join(args.output_dir, f"{base_filename}_depth.jpg") if args.save_depth else None
+    position_3d_path = os.path.join(args.output_dir, f"{base_filename}_3d.jpg") if args.save_3d else None
+    
+    if args.method == "auto":
+        # Use the comprehensive estimation function
+        if args.verbose:
+            print("Using auto-calibrated method with depth estimation and geometry")
+        
+        # Load MiDaS model
+        model, transform = load_midas_model()
+        
+        # Estimate object GPS
+        lat, lon, alt, confidence, distance, visualizations = estimate_object_gps(
+            args.image_path, args.x, args.y,
+            args.latitude, args.longitude, args.altitude,
+            args.camera_model,
+            args.yaw, args.pitch, args.roll,
+            args.camera_height,
+            model, transform,
+            visualize=True
+        )
+        
+        # Copy visualizations to the output directory if needed
+        if visualizations:
+            for vis_type, vis_path in visualizations.items():
+                if vis_path and os.path.exists(vis_path):
+                    # If output paths are different from the auto-generated ones
+                    if vis_type == 'annotated_image' and annotated_path != vis_path:
+                        cv2.imwrite(annotated_path, cv2.imread(vis_path))
+                    elif vis_type == 'depth_map' and depth_path and depth_path != vis_path:
+                        cv2.imwrite(depth_path, cv2.imread(vis_path))
+                    elif vis_type == '3d_position' and position_3d_path and position_3d_path != vis_path:
+                        cv2.imwrite(position_3d_path, cv2.imread(vis_path))
+        
+    elif args.method == "geometry":
+        # Load image to get dimensions
+        img = cv2.imread(args.image_path)
+        if img is None:
+            raise FileNotFoundError(f"Could not load image from {args.image_path}")
+        
+        # Get camera FOV
+        fov = get_fov_from_camera_params(args.camera_model)
+        vertical_fov = fov["vertical"]
+        
+        # Calculate distance using ground plane geometry
+        distance = calculate_ground_distance(
+            args.y, img.shape[0], args.camera_height, args.pitch, vertical_fov
+        )
+        
+        # Project GPS coordinates
+        lat, lon = project_gps(args.latitude, args.longitude, args.yaw, distance)
+        alt = args.altitude  # No altitude change in geometry method
+        
+        # Calculate confidence (fixed for geometry method)
+        confidence = 0.7  # Simple geometry is reasonably confident but not perfect
+        
+        # Create annotated image
+        annotated = annotate_image(img, (args.x, args.y), f"{distance:.1f}m")
+        cv2.imwrite(annotated_path, annotated)
+        
+    else:  # args.method == "depth"
+        # Load MiDaS model
+        model, transform = load_midas_model()
+        
+        # Estimate depth
+        img, depth_map = estimate_depth(args.image_path, model, transform, auto_calibrate=False)[:2]
+        
+        # Get depth at target pixel
+        depth_value = get_depth_at_pixel(depth_map, args.x, args.y)
+        
+        # Apply scaling
+        distance = estimate_distance_from_depth(depth_value, args.scale)
+        
+        # Calculate confidence
+        confidence = calculate_depth_confidence(args.x, args.y, depth_map)
+        
+        # Project GPS coordinates
+        lat, lon = project_gps(args.latitude, args.longitude, args.yaw, distance)
+        alt = args.altitude  # No altitude change in simple depth method
+        
+        # Create annotated image
+        annotated = annotate_image(img, (args.x, args.y), f"{distance:.1f}m")
+        cv2.imwrite(annotated_path, annotated)
+        
+        # Save depth visualization if requested
+        if args.save_depth and depth_path:
+            save_depth_heatmap(depth_map, depth_path, (args.x, args.y), distance)
+    
+    # Print results
+    print(f"\nResults for point ({args.x}, {args.y}):")
+    print(f"Estimated distance: {distance:.2f} meters")
+    print(f"Estimated GPS: {lat:.6f}, {lon:.6f}, {alt:.2f}m")
+    print(f"Confidence: {confidence:.2f} (scale 0-1)")
+    
+    # Print output file locations
+    print(f"\nSaved annotated image to: {annotated_path}")
+    if args.save_depth and depth_path:
+        print(f"Saved depth visualization to: {depth_path}")
+    if args.save_3d and position_3d_path and os.path.exists(position_3d_path):
+        print(f"Saved 3D position visualization to: {position_3d_path}")
+    
+    # Print Google Maps link
+    maps_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+    print(f"\nView on Google Maps: {maps_link}")
+
+
+if __name__ == "__main__":
+    main()
+
+================
+File: src/mimirmap/core.py
+================
+import cv2
+import torch
+import numpy as np
+import math
+import os
+from scipy.spatial.transform import Rotation as R
+from pyproj import Geod
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+def load_midas_model():
+    """Load MiDaS depth estimation model."""
+    model_type = "MiDaS_small"
+    midas = torch.hub.load("intel-isl/MiDaS", model_type, trust_repo=True)
+    midas.to(torch.device("cuda" if torch.cuda.is_available() else "cpu")).eval()
+    transform = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True).small_transform
+    return midas, transform
+
+def estimate_depth(image_path, model, transform, auto_calibrate=True, camera_height=1.4, pitch_degrees=12.0, gopro_model="HERO8"):
+    """
+    Estimate depth with improved scaling to absolute metrics using ground plane calibration.
+    
+    Args:
+        image_path: Path to the input image
+        model: MiDaS model
+        transform: MiDaS transform
+        auto_calibrate: Whether to auto-calibrate the depth map using ground plane geometry
+        camera_height: Height of the camera from the ground in meters
+        pitch_degrees: Downward pitch of the camera in degrees
+        gopro_model: GoPro camera model for FOV estimation
+        
+    Returns:
+        img: Original image
+        depth_map_meters: Depth map in meters
+        reference_pixel: Reference point used for calibration (if auto_calibrate=True)
+        reference_distance: Reference distance in meters (if auto_calibrate=True)
+    """
+    # Load and prepare image
+    img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f"Could not load image from {image_path}")
+
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    input_batch = transform(img_rgb).to(next(model.parameters()).device)
+
+    # Generate depth prediction
+    with torch.no_grad():
+        prediction = model(input_batch)
+        prediction = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=img_rgb.shape[:2],
+            mode="bicubic",
+            align_corners=False
+        ).squeeze().cpu().numpy()
+
+    # Handle negative depth values
+    prediction = np.maximum(prediction, 0.1)  # Ensure positive depth with minimum threshold
+
+    if auto_calibrate:
+        # Get camera FOV information
+        camera_fov = get_fov_from_camera_params(gopro_model)
+        vertical_fov = camera_fov["vertical"]
+
+        # Determine reference point for ground plane (visible road start)
+        image_height = img.shape[0]
+        image_width = img.shape[1]
+
+        # Use a point approximately 3/4 down the image for the visible road
+        ground_ref_v = int(image_height * 0.75)
+        ground_ref_u = int(image_width / 2)  # Center horizontally
+
+        # Calculate the reference distance using ground plane geometry
+        reference_distance = calculate_ground_distance(
+            ground_ref_v, image_height, camera_height, pitch_degrees, vertical_fov
+        )
+
+        # Get depth at the reference point
+        relative_depth_at_reference = prediction[ground_ref_v, ground_ref_u]
+
+        # Calculate scaling factor
+        if relative_depth_at_reference > 0.1:
+            depth_scale = reference_distance / relative_depth_at_reference
+        else:
+            # Try to find a better reference point nearby
+            window_size = 25
+            y_min = max(0, ground_ref_v - window_size)
+            y_max = min(image_height, ground_ref_v + window_size + 1)
+            x_min = max(0, ground_ref_u - window_size)
+            x_max = min(image_width, ground_ref_u + window_size + 1)
+
+            window = prediction[y_min:y_max, x_min:x_max]
+            max_depth_idx = np.unravel_index(window.argmax(), window.shape)
+
+            # Convert to image coordinates
+            better_v = y_min + max_depth_idx[0]
+            better_u = x_min + max_depth_idx[1]
+            better_depth = prediction[better_v, better_u]
+
+            # Calculate new reference distance
+            new_reference_distance = calculate_ground_distance(
+                better_v, image_height, camera_height, pitch_degrees, vertical_fov
+            )
+
+            depth_scale = new_reference_distance / better_depth
+            
+            # Update reference point
+            ground_ref_u, ground_ref_v = better_u, better_v
+            reference_distance = new_reference_distance
+
+        # Apply scaling - convert to meters
+        depth_map_meters = prediction * depth_scale
+
+        # Apply a bilateral filter to reduce noise while preserving edges
+        depth_map_meters = cv2.bilateralFilter(depth_map_meters.astype(np.float32),
+                                              d=7, sigmaColor=0.1, sigmaSpace=5.0)
+
+        reference_pixel = (ground_ref_u, ground_ref_v)
+        return img, depth_map_meters, reference_pixel, reference_distance
+    else:
+        # Return the raw depth map without calibration
+        return img, prediction, None, None
+
+def get_depth_at_pixel(depth_map, x, y):
+    """Get depth value at specific pixel coordinates."""
+    if 0 <= y < depth_map.shape[0] and 0 <= x < depth_map.shape[1]:
+        return depth_map[y, x]
+    else:
+        raise ValueError(f"Pixel coordinates ({x}, {y}) are outside the image bounds: {depth_map.shape[1]}x{depth_map.shape[0]}")
+
+def estimate_distance_from_depth(depth_value, scale=1.0):
+    """Convert depth value to distance in meters."""
+    return depth_value * scale
+
+def calculate_depth_confidence(x, y, depth_map, window_size=5):
+    """
+    Calculate confidence in the depth estimate based on depth variation in the local neighborhood.
+    Lower variation indicates higher confidence.
+
+    Args:
+        x, y: Pixel coordinates
+        depth_map: Depth map
+        window_size: Size of the neighborhood window to analyze
+
+    Returns:
+        confidence: 0-1 value representing confidence (1 = highest)
+    """
+    # Create a small window around the point
+    y_min = max(0, y-window_size)
+    y_max = min(depth_map.shape[0], y+window_size+1)
+    x_min = max(0, x-window_size)
+    x_max = min(depth_map.shape[1], x+window_size+1)
+
+    local_region = depth_map[y_min:y_max, x_min:x_max]
+
+    # Calculate coefficient of variation (std/mean) as a measure of consistency
+    mean_depth = np.mean(local_region)
+    if mean_depth > 0:
+        std_depth = np.std(local_region)
+        coeff_variation = std_depth / mean_depth
+
+        # Convert to confidence (0-1 scale)
+        # Lower variation = higher confidence
+        confidence = max(0, min(1, 1 - coeff_variation))
+    else:
+        confidence = 0
+
+    return confidence
+
+def calculate_ground_distance(v, image_height, camera_height, pitch_deg, v_fov_deg):
+    """
+    Calculate the distance to a point on the ground plane using perspective geometry.
+
+    Args:
+        v: Vertical pixel coordinate (from top of image)
+        image_height: Height of the image in pixels
+        camera_height: Height of the camera from the ground in meters
+        pitch_deg: Downward pitch of the camera in degrees
+        v_fov_deg: Vertical field of view in degrees
+
+    Returns:
+        distance: Distance to the ground point in meters
+    """
+    # Calculate the angle for each pixel
+    deg_per_pixel = v_fov_deg / image_height
+
+    # Get center of image
+    center_v = image_height / 2
+
+    # Calculate angle from optical axis (negative for points below center)
+    pixel_angle = (center_v - v) * deg_per_pixel
+
+    # Total angle from horizontal
+    total_angle_rad = math.radians(pitch_deg - pixel_angle)
+
+    # Calculate distance using trigonometry (adjacent = opposite / tan(angle))
+    if total_angle_rad > 0:  # Make sure we're looking downward
+        distance = camera_height / math.tan(total_angle_rad)
+        return distance
+    else:
+        return float('inf')  # Point is above horizon
+
+def get_fov_from_camera_params(gopro_model):
+    """Get the diagonal, horizontal, and vertical FOV for a camera model."""
+    # Default FOV values for different GoPro models
+    camera_fov = {
+        "HERO8": {"diagonal": 80, "horizontal": 69.5, "vertical": 49.8},
+        "HERO9": {"diagonal": 84, "horizontal": 73.6, "vertical": 53.4},
+        "HERO10": {"diagonal": 84, "horizontal": 73.6, "vertical": 53.4},
+        "HERO7": {"diagonal": 78, "horizontal": 66.9, "vertical": 45.8},
+        "DEFAULT": {"diagonal": 80, "horizontal": 69.5, "vertical": 49.8}
+    }
+
+    return camera_fov.get(gopro_model.upper(), camera_fov["DEFAULT"])
+
+def get_camera_parameters(model="HERO8", resolution=None):
+    """
+    Get generic camera parameters based on model and resolution.
+    Values are approximate and should be replaced with actual calibration when possible.
+
+    Args:
+        model: Camera model (e.g., "HERO8")
+        resolution: Tuple (width, height) of image resolution
+        
+    Returns:
+        fx, fy, cx, cy (camera intrinsics)
+    """
+    if resolution is None:
+        # Use a default resolution if none provided
+        width, height = 2666, 2000
+    else:
+        width, height = resolution
+        
+    # Generic camera parameters
+    camera_params = {
+        "HERO8": {
+            "focal_length_mm": 2.8,
+            "sensor_width_mm": 6.17,
+            "sensor_height_mm": 4.55,
+            "fov_degrees": get_fov_from_camera_params("HERO8")["diagonal"],
+        },
+        "HERO9": {
+            "focal_length_mm": 2.92,
+            "sensor_width_mm": 6.20,
+            "sensor_height_mm": 4.65,
+            "fov_degrees": get_fov_from_camera_params("HERO9")["diagonal"],
+        },
+        "HERO10": {
+            "focal_length_mm": 2.92,
+            "sensor_width_mm": 6.20,
+            "sensor_height_mm": 4.65,
+            "fov_degrees": get_fov_from_camera_params("HERO10")["diagonal"],
+        },
+        # Default for unknown models
+        "DEFAULT": {
+            "focal_length_mm": 2.8,
+            "sensor_width_mm": 6.0,
+            "sensor_height_mm": 4.5,
+            "fov_degrees": get_fov_from_camera_params("DEFAULT")["diagonal"],
+        }
+    }
+
+    # Get parameters for the specified model or use DEFAULT
+    params = camera_params.get(model.upper(), camera_params["DEFAULT"])
+
+    # Calculate focal length in pixels using field of view
+    fx = width / (2 * math.tan(math.radians(params["fov_degrees"] / 2)))
+    fy = height / (2 * math.tan(math.radians(params["fov_degrees"] * height / width / 2)))
+
+    # Principal point (usually at the center of the image)
+    cx = width / 2
+    cy = height / 2
+
+    return fx, fy, cx, cy
+
+def pixel_to_camera_coords(u, v, Z, fx, fy, cx, cy):
+    """Convert pixel coordinates to camera coordinates."""
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+    return np.array([X, Y, Z])
+
+def apply_orientation(point, yaw, pitch, roll):
+    """Apply camera orientation to the point in camera coordinates."""
+    r = R.from_euler('ZYX', [yaw, pitch, roll], degrees=True)
+    return r.apply(point)
+
+def project_gps(lat, lon, bearing, distance_m, altitude_change=0):
+    """
+    Project a point from a starting GPS position along a bearing for a specified distance.
+    
+    Args:
+        lat, lon: Starting coordinates in decimal degrees
+        bearing: Direction in degrees (0=North, 90=East, etc.)
+        distance_m: Distance in meters
+        altitude_change: Change in altitude (vertical) in meters
+        
+    Returns:
+        lat2, lon2: Projected coordinates in decimal degrees
+        alt2: New altitude
+    """
+    geod = Geod(ellps='WGS84')
+    lon2, lat2, _ = geod.fwd(lon, lat, bearing, distance_m)
+    return lat2, lon2
+
+def local_to_gps(offset, lat0, lon0, alt0):
+    """
+    Convert local ENU coordinates to GPS.
+    
+    Args:
+        offset: Numpy array [east, up, north] in meters
+        lat0, lon0, alt0: Reference GPS coordinates
+        
+    Returns:
+        lat1, lon1, alt1: Resulting GPS coordinates
+    """
+    geod = Geod(ellps="WGS84")
+    east, up, north = offset[0], offset[1], offset[2]
+    horizontal_dist = np.hypot(east, north)
+    azimuth = np.degrees(np.arctan2(east, north)) % 360
+    lon1, lat1, _ = geod.fwd(lon0, lat0, azimuth, horizontal_dist)
+    return lat1, lon1, alt0 + up
+
+def annotate_image(img, point, label, color=(0, 255, 0), radius=10, font_scale=0.6, thickness=2):
+    """
+    Annotate an image with a point and label.
+    
+    Args:
+        img: Input image
+        point: (x, y) coordinates to mark
+        label: Text label to add
+        color: BGR color tuple
+        radius: Circle radius
+        font_scale: Size of text
+        thickness: Line thickness
+        
+    Returns:
+        Annotated image
+    """
+    annotated = img.copy()
+    cv2.circle(annotated, point, radius, color, -1)
+    cv2.putText(annotated, label, (point[0]+10, point[1]-10), 
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+    return annotated
+
+def save_depth_heatmap(depth_map, output_path, reference_pixel=None, reference_distance=None):
+    """
+    Save a heatmap visualization of the depth map.
+    
+    Args:
+        depth_map: Depth map array
+        output_path: Path to save the visualization
+        reference_pixel: Optional reference pixel (x,y) to mark
+        reference_distance: Optional reference distance to display
+    """
+    plt.figure(figsize=(10, 6))
+    plt.imshow(depth_map, cmap='plasma')
+    plt.colorbar(label='Depth (meters)')
+    
+    if reference_pixel is not None:
+        plt.scatter(reference_pixel[0], reference_pixel[1], c='white', s=50)
+        if reference_distance is not None:
+            plt.annotate(f"{reference_distance:.1f}m", 
+                         (reference_pixel[0]+10, reference_pixel[1]-10),
+                         color='white', fontsize=8)
+    
+    plt.title('Depth Map')
+    plt.axis('off')
+    plt.tight_layout()
+    
+    # Make sure the directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, bbox_inches='tight', dpi=300)
+    plt.close()
+
+def visualize_3d_position(camera_coords, object_coords, reference_coords=None, output_path=None):
+    """
+    Visualize the 3D positioning between camera and object.
+    
+    Args:
+        camera_coords: Camera position (typically origin)
+        object_coords: Object position in 3D space
+        reference_coords: Optional reference point coordinates
+        output_path: Path to save the visualization
+    """
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot camera at origin
+    ax.scatter([camera_coords[0]], [camera_coords[1]], [camera_coords[2]], 
+               color='red', s=100, label='Camera')
+
+    # Plot object
+    ax.scatter([object_coords[0]], [object_coords[1]], [object_coords[2]],
+               color='blue', s=100, label='Object')
+
+    # Draw line from camera to object
+    ax.plot([camera_coords[0], object_coords[0]], 
+            [camera_coords[1], object_coords[1]], 
+            [camera_coords[2], object_coords[2]], 'b--')
+
+    # Plot reference point if provided
+    if reference_coords is not None:
+        ax.scatter([reference_coords[0]], [reference_coords[1]], [reference_coords[2]],
+                   color='green', s=100, label='Reference')
+        # Draw line from camera to reference
+        ax.plot([camera_coords[0], reference_coords[0]], 
+                [camera_coords[1], reference_coords[1]], 
+                [camera_coords[2], reference_coords[2]], 'g--')
+
+    # Set labels
+    ax.set_xlabel('East (m)')
+    ax.set_ylabel('North (m)')
+    ax.set_zlabel('Up (m)')
+    ax.set_title('3D Positioning')
+    ax.legend()
+
+    # Equal aspect ratio 
+    max_range = max(1.0, np.max(np.abs([
+        object_coords[0], object_coords[1], object_coords[2],
+        0, 0, 0  # Camera is at origin
+    ])))
+    ax.set_xlim([-max_range, max_range])
+    ax.set_ylim([-max_range, max_range])
+    ax.set_zlim([-max_range, max_range])
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        plt.savefig(output_path, bbox_inches='tight', dpi=300)
+    
+    plt.close()
+
+def estimate_object_gps(
+    image_path, x, y,
+    camera_lat, camera_lon, camera_alt,
+    camera_model="HERO8",
+    yaw=0.0, pitch=12.0, roll=0.0,
+    camera_height=1.4,
+    model=None, transform=None,
+    visualize=False
+):
+    """
+    Estimate the GPS coordinates of an object in the image.
+    
+    Args:
+        image_path: Path to the input image
+        x, y: Pixel coordinates of the object
+        camera_lat, camera_lon, camera_alt: Camera GPS coordinates
+        camera_model: Camera model for intrinsics estimation
+        yaw, pitch, roll: Camera orientation in degrees
+        camera_height: Height of the camera from ground in meters
+        model: Optional pre-loaded MiDaS model
+        transform: Optional pre-loaded MiDaS transform
+        visualize: Whether to create and return visualizations
+        
+    Returns:
+        lat, lon, alt: Estimated GPS coordinates of the object
+        confidence: Confidence score for the estimation (0-1)
+        distance: Estimated distance in meters
+        visualizations: Dict of visualization paths if visualize=True
+    """
+    # Load MiDaS model if not provided
+    if model is None or transform is None:
+        model, transform = load_midas_model()
+    
+    # Estimate depth with auto-calibration
+    img, depth_map, reference_pixel, reference_distance = estimate_depth(
+        image_path, model, transform,
+        auto_calibrate=True,
+        camera_height=camera_height,
+        pitch_degrees=pitch,
+        gopro_model=camera_model
+    )
+    
+    # Get image dimensions
+    image_height, image_width = img.shape[:2]
+    resolution = (image_width, image_height)
+    
+    # Get camera intrinsics
+    fx, fy, cx, cy = get_camera_parameters(camera_model, resolution)
+    
+    # Get camera FOV information
+    camera_fov = get_fov_from_camera_params(camera_model)
+    vertical_fov = camera_fov["vertical"]
+    
+    # Check if pixel coordinates are valid
+    if not (0 <= y < depth_map.shape[0] and 0 <= x < depth_map.shape[1]):
+        raise ValueError(f"Pixel coordinates ({x}, {y}) are outside the image bounds")
+
+    # Get depth at the specified pixel
+    Z = depth_map[y, x]
+    
+    # Check if the depth is too small, try to find a better point nearby
+    if Z < 0.5:  # If depth is very small, likely inaccurate
+        # Find the point with highest depth in a small window
+        window_size = 25
+        y_min = max(0, y - window_size)
+        y_max = min(depth_map.shape[0], y + window_size + 1)
+        x_min = max(0, x - window_size)
+        x_max = min(depth_map.shape[1], x + window_size + 1)
+
+        window = depth_map[y_min:y_max, x_min:x_max]
+        max_depth_idx = np.unravel_index(window.argmax(), window.shape)
+
+        # Convert to image coordinates
+        better_y = y_min + max_depth_idx[0]
+        better_x = x_min + max_depth_idx[1]
+        better_Z = depth_map[better_y, better_x]
+
+        if better_Z > Z:
+            x, y, Z = better_x, better_y, better_Z
+    
+    # Calculate confidence in the depth estimate
+    confidence = calculate_depth_confidence(x, y, depth_map)
+    
+    # If we still have a very low depth, use a fallback based on the auto-calibration
+    if Z < 0.5:
+        # Estimate distance based on position in image using ground plane geometry
+        fallback_distance = calculate_ground_distance(
+            y, image_height, camera_height, pitch, vertical_fov
+        )
+        
+        # Only use this if the point is likely on the ground plane
+        if 0 < fallback_distance < 100:  # Reasonable range check
+            Z = fallback_distance
+        else:
+            # Use reference distance as approximate value
+            Z = reference_distance
+    
+    # Convert pixel to camera coordinates
+    point_cam = pixel_to_camera_coords(x, y, Z, fx, fy, cx, cy)
+    
+    # Apply camera orientation
+    point_world = apply_orientation(point_cam, yaw, -pitch, roll)  # negate pitch if Y is down
+    
+    # Convert to ENU coordinates (East-North-Up)
+    point_world_ENU = np.array([point_world[0], -point_world[1], point_world[2]])  # flip Y to up
+    
+    # Calculate straight-line distance
+    distance = np.linalg.norm(point_world_ENU)
+    
+    # Convert to GPS
+    lat, lon, alt = local_to_gps(point_world_ENU, camera_lat, camera_lon, camera_alt)
+    
+    # Create visualizations if requested
+    visualizations = {}
+    if visualize:
+        # Annotate the original image
+        annotated_img = annotate_image(img, (x, y), f"{Z:.1f}m")
+        annotated_path = os.path.splitext(image_path)[0] + "_annotated.jpg"
+        cv2.imwrite(annotated_path, annotated_img)
+        visualizations['annotated_image'] = annotated_path
+        
+        # Create depth heatmap
+        heatmap_path = os.path.splitext(image_path)[0] + "_depth.jpg"
+        save_depth_heatmap(depth_map, heatmap_path, (x, y), Z)
+        visualizations['depth_map'] = heatmap_path
+        
+        # Create 3D visualization
+        vis_3d_path = os.path.splitext(image_path)[0] + "_3d.jpg"
+        camera_origin = np.array([0, 0, 0])
+        visualize_3d_position(camera_origin, point_world_ENU, None, vis_3d_path)
+        visualizations['3d_position'] = vis_3d_path
+    
+    return lat, lon, alt, confidence, distance, visualizations if visualize else None
+
+================
+File: tests/test_core.py
+================
+# At the top of your test file
+import sys
+from unittest.mock import MagicMock
+
+# Mock torch and related modules
+sys.modules['torch'] = MagicMock()
+sys.modules['torch.hub'] = MagicMock()
+sys.modules['torch.nn'] = MagicMock()
+sys.modules['torch.nn.functional'] = MagicMock()
+
+import os
+import pytest
+import numpy as np
+import cv2
+import tempfile
+from unittest.mock import patch, MagicMock
+
+from mimirmap import core
+
+@pytest.fixture
+def sample_image():
+    """Create a simple test image."""
+    img = np.ones((480, 640, 3), dtype=np.uint8) * 128
+    # Add some gradients for more realistic depth estimation
+    for y in range(img.shape[0]):
+        for x in range(img.shape[1]):
+            img[y, x, 0] = min(255, int(128 + y * 0.2))  # Red channel increases with y
+            img[y, x, 1] = min(255, int(128 + x * 0.2))  # Green channel increases with x
+    
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
+        cv2.imwrite(f.name, img)
+        return f.name
+
+@pytest.fixture
+def mock_midas_model():
+    """Create a better mock MiDaS model and transform."""
+    # Create a properly shaped depth map
+    depth_map = np.ones((480, 640), dtype=np.float32)
+    
+    # Create a mock model that returns a tensor with the right shape
+    model = MagicMock()
+    # Configure the prediction method
+    prediction = MagicMock()
+    prediction.unsqueeze.return_value = MagicMock()
+    prediction.unsqueeze.return_value.squeeze.return_value = MagicMock()
+    prediction.unsqueeze.return_value.squeeze.return_value.cpu.return_value = MagicMock()
+    prediction.unsqueeze.return_value.squeeze.return_value.cpu.return_value.numpy.return_value = depth_map
+    
+    # Make the model return the prediction when called
+    model.return_value = prediction
+    
+    # Create a mock transform
+    transform = MagicMock()
+    
+    return model, transform
+
+def test_estimate_depth(sample_image, mock_midas_model):
+    """Test depth estimation with mock model."""
+    with patch('torch.nn.functional.interpolate') as mock_interpolate:
+        # Configure mock_interpolate to return a tensor that can be processed
+        mock_interpolate.return_value = MagicMock()
+        mock_interpolate.return_value.squeeze.return_value = MagicMock()
+        mock_interpolate.return_value.squeeze.return_value.cpu.return_value = MagicMock()
+        mock_interpolate.return_value.squeeze.return_value.cpu.return_value.numpy.return_value = np.ones((480, 640))
+        
+        # Test without auto-calibration
+        img, depth_map = core.estimate_depth(
+            sample_image, mock_midas_model[0], mock_midas_model[1], 
+            auto_calibrate=False
+        )[:2]
+        
+        assert img is not None
+        assert depth_map is not None
+        assert depth_map.shape == (480, 640)
+
+def test_load_midas_model():
+    """Test that the model loading function works."""
+    try:
+        # Skip this test if torch is not available
+        import torch
+        
+        # Create a more direct patch of torch.hub.load
+        original_load = torch.hub.load
+        
+        # Replace with our mock
+        call_count = [0]  # Use a list for mutable reference
+        
+        def mock_load(*args, **kwargs):
+            call_count[0] += 1
+            return MagicMock()
+            
+        torch.hub.load = mock_load
+        
+        try:
+            # Call the function
+            model, transform = core.load_midas_model()
+            
+            # Check results
+            assert model is not None
+            assert transform is not None
+            assert call_count[0] == 2
+        finally:
+            # Restore original function
+            torch.hub.load = original_load
+    except ImportError:
+        pytest.skip("PyTorch not available, skipping test")
+
+
+def test_get_fov_from_camera_params():
+    """Test camera FOV parameter retrieval."""
+    # Test known camera model
+    fov_hero8 = core.get_fov_from_camera_params("HERO8")
+    assert fov_hero8["diagonal"] == 80
+    assert fov_hero8["horizontal"] == 69.5
+    assert fov_hero8["vertical"] == 49.8
+    
+    # Test unknown camera model (should use DEFAULT)
+    fov_unknown = core.get_fov_from_camera_params("UNKNOWN_MODEL")
+    assert fov_unknown["diagonal"] == 80
+    assert fov_unknown["horizontal"] == 69.5
+    assert fov_unknown["vertical"] == 49.8
+    
+    # Test case insensitivity
+    fov_lowercase = core.get_fov_from_camera_params("hero9")
+    assert fov_lowercase["diagonal"] == 84
+
+
+def test_get_camera_parameters():
+    """Test camera intrinsic parameter calculation."""
+    fx, fy, cx, cy = core.get_camera_parameters("HERO8", (2666, 2000))
+    
+    # Basic checks
+    assert fx > 0
+    assert fy > 0
+    assert cx == 2666 / 2  # Should be image center x
+    assert cy == 2000 / 2  # Should be image center y
+    
+    # Test with default resolution
+    fx2, fy2, cx2, cy2 = core.get_camera_parameters("HERO8")
+    assert fx2 > 0
+    assert fy2 > 0
+
+
+def test_calculate_ground_distance():
+    """Test ground plane distance calculation."""
+    # Test with typical values
+    distance = core.calculate_ground_distance(v=480, image_height=720, 
+                                            camera_height=1.5, pitch_deg=15, 
+                                            v_fov_deg=60)
+    assert distance > 0
+    
+    # Test point at horizon (should return infinite distance)
+    horizon_distance = core.calculate_ground_distance(v=360, image_height=720, 
+                                                    camera_height=1.5, pitch_deg=0, 
+                                                    v_fov_deg=60)
+    assert horizon_distance == float('inf')
+    
+    # Test point above horizon (should return infinite distance)
+    above_horizon = core.calculate_ground_distance(v=300, image_height=720, 
+                                                 camera_height=1.5, pitch_deg=0, 
+                                                 v_fov_deg=60)
+    assert above_horizon == float('inf')
+
+
+def test_project_gps():
+    """Test GPS coordinate projection."""
+    # Test northward projection
+    lat1, lon1 = core.project_gps(lat=0.0, lon=0.0, bearing=0.0, distance_m=111320)
+    assert abs(lat1 - 1.0) < 0.01  # ~1 degree north (111.32 km at equator)
+    assert abs(lon1) < 0.01  # Longitude should be almost unchanged
+    
+    # Test eastward projection
+    lat2, lon2 = core.project_gps(lat=0.0, lon=0.0, bearing=90.0, distance_m=111320)
+    assert abs(lat2) < 0.01  # Latitude should be almost unchanged
+    assert abs(lon2 - 1.0) < 0.01  # ~1 degree east at equator
+
+
+def test_pixel_to_camera_coords():
+    """Test conversion from pixel to camera coordinates."""
+    # Test with image center
+    center_coords = core.pixel_to_camera_coords(u=100, v=100, Z=10, 
+                                              fx=200, fy=200, cx=100, cy=100)
+    assert abs(center_coords[0]) < 1e-6  # Should be very close to optical axis
+    assert abs(center_coords[1]) < 1e-6
+    assert abs(center_coords[2] - 10) < 1e-6  # Z should be unchanged
+    
+    # Test with offset from center
+    offset_coords = core.pixel_to_camera_coords(u=150, v=200, Z=10, 
+                                              fx=200, fy=200, cx=100, cy=100)
+    assert offset_coords[0] > 0  # Right of center should be positive X
+    assert offset_coords[1] > 0  # Below center should be positive Y (if Y down)
+    assert abs(offset_coords[2] - 10) < 1e-6  # Z should be unchanged
+
+
+def test_apply_orientation():
+    """Test application of camera orientation to points."""
+    # Test with zero rotation
+    point = np.array([1.0, 2.0, 3.0])
+    rotated = core.apply_orientation(point, yaw=0, pitch=0, roll=0)
+    assert np.allclose(rotated, point)  # Should be unchanged
+    
+    # Test with 90 degree yaw (rotate around Z axis)
+    rotated = core.apply_orientation(np.array([1.0, 0.0, 0.0]), yaw=90, pitch=0, roll=0)
+    assert np.allclose(rotated, [0.0, 1.0, 0.0], atol=1e-5)  # Changed sign
+
+def test_local_to_gps():
+    """Test conversion from local ENU coordinates to GPS."""
+    # Test with zero offset
+    lat, lon, alt = core.local_to_gps(offset=[0, 0, 0], lat0=10.0, lon0=20.0, alt0=30.0)
+    assert np.isclose(lat, 10.0)
+    assert np.isclose(lon, 20.0)
+    assert np.isclose(alt, 30.0)
+    
+    # Test with pure altitude change
+    lat, lon, alt = core.local_to_gps(offset=[0, 10, 0], lat0=10.0, lon0=20.0, alt0=30.0)
+    assert np.isclose(lat, 10.0)
+    assert np.isclose(lon, 20.0)
+    assert np.isclose(alt, 40.0)  # 30m + 10m up
+
+
+def test_calculate_depth_confidence():
+    """Test depth confidence calculation."""
+    # Create a mock depth map
+    depth_map = np.ones((100, 100), dtype=np.float32)
+    
+    # Test with uniform region (high confidence)
+    confidence = core.calculate_depth_confidence(x=50, y=50, depth_map=depth_map)
+    assert confidence == 1.0
+    
+    # Test with non-uniform region (lower confidence)
+    depth_map[45:55, 45:55] = np.random.normal(1.0, 0.5, (10, 10))
+    confidence = core.calculate_depth_confidence(x=50, y=50, depth_map=depth_map)
+    assert 0.0 <= confidence <= 1.0
+
+
+def test_annotate_image():
+    """Test image annotation."""
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    annotated = core.annotate_image(img, point=(50, 50), label="Test")
+    
+    # Check that the annotation was added (the pixel should no longer be black)
+    assert not np.all(annotated[50, 50] == [0, 0, 0])
+
+def test_estimate_depth(sample_image):
+    """Test depth estimation with a direct monkeypatch approach."""
+    # Create a proper depth map
+    expected_depth = np.ones((480, 640), dtype=np.float32)
+    
+    # Create a modified version of estimate_depth that skips the PyTorch operations
+    def mock_estimate_depth(image_path, model, transform, **kwargs):
+        img = cv2.imread(image_path)
+        # Return the expected depth map directly, bypassing PyTorch
+        return img, expected_depth, (320, 240), 10.0
+    
+    # Temporarily replace the function with our mock version
+    original_estimate_depth = core.estimate_depth
+    core.estimate_depth = mock_estimate_depth
+    
+    try:
+        # Now call our function using the actual interface
+        img, depth_map = core.estimate_depth(
+            sample_image, None, None, auto_calibrate=False
+        )[:2]
+        
+        # Assert the expected shape
+        assert img is not None
+        assert depth_map is not None
+        assert depth_map.shape == (480, 640)
+    finally:
+        # Restore the original function
+        core.estimate_depth = original_estimate_depth
+
+
+def test_estimate_object_gps(sample_image, mock_midas_model):
+    """Test full GPS estimation with mock model."""
+    # Create a mock function for estimate_depth that returns a proper 2D array
+    with patch('mimirmap.core.estimate_depth') as mock_estimate_depth:
+        # Configure mock to return a properly shaped depth map
+        mock_depth_map = np.ones((480, 640), dtype=np.float32)
+        mock_estimate_depth.return_value = (
+            np.ones((480, 640, 3), dtype=np.uint8),  # Image
+            mock_depth_map,                          # Depth map
+            (320, 240),                              # Reference pixel
+            10.0                                     # Reference distance
+        )
+        
+        # Test without visualization
+        lat, lon, alt, confidence, distance, vis = core.estimate_object_gps(
+            image_path=sample_image,
+            x=320, y=240,
+            camera_lat=10.0, camera_lon=20.0, camera_alt=30.0,
+            camera_model="HERO8",
+            yaw=0.0, pitch=15.0, roll=0.0,
+            camera_height=1.5,
+            model=mock_midas_model[0], transform=mock_midas_model[1],
+            visualize=False
+        )
+        
+        assert -90 <= lat <= 90  # Valid latitude range
+        assert -180 <= lon <= 180  # Valid longitude range
+        assert alt >= 0  # Altitude should be non-negative in this test
+        assert 0 <= confidence <= 1  # Valid confidence range
+        assert distance > 0  # Distance should be positive
+        assert vis is None  # No visualizations requested
+
+
+def test_cleanup(sample_image):
+    """Clean up temporary files."""
+    if os.path.exists(sample_image):
+        os.unlink(sample_image)
+
+================
+File: .gitignore
+================
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm, VSCode
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# MimirMap specific
+output/
+examples/output/
+*.jpg
+*.png
+!examples/*.jpg
+!examples/*.png
+
+# MiDaS model cache
+.torch/
+.cache/torch/
+*.pt
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+================
+File: LICENSE
+================
+MIT License
+
+Copyright (c) 2025 Joaquin Olivera
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================
+File: pyproject.toml
+================
+[project]
+name = "mimirmap"
+version = "0.1.0"
+description = "Estimate GPS coordinates from monocular images using MiDaS and geometry"
+authors = [{name = "Joaquin", email = "joaquin.olivera@gmail.com"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=1.7.1",
+    "opencv-python>=4.5.0",
+    "numpy>=1.19.0",
+    "scipy>=1.6.0",
+    "matplotlib>=3.3.0",
+    "pyproj>=3.0.0"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/joaquinolivera/Mimirmap"
+"Bug Tracker" = "https://github.com/joaquinolivera/Mimirmap/issues"
+
+[project.scripts]
+mimirmap = "mimirmap.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["mimirmap"]
+package-dir = {"" = "src"}
+
+[tool.black]
+line-length = 100
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+================
+File: README.md
+================
+# MimirMap
+
+**MimirMap** is a Python library for estimating GPS coordinates of objects from a single monocular image using deep learning and geometric calculations. The library leverages the MiDaS depth estimation model and ground plane geometry to provide accurate distance and position estimation.
+
+![MimirMap Example](https://via.placeholder.com/800x400?text=MimirMap+Example)
+
+## Features
+
+- **Depth Estimation**: Uses Intel's MiDaS model to estimate depth from a single image
+- **Auto-Calibration**: Automatically calibrates depth maps using ground plane geometry
+- **Distance Calculation**: Multiple methods to calculate the distance to objects
+- **GPS Projection**: Converts pixel coordinates to real-world GPS coordinates
+- **Confidence Metrics**: Provides confidence scores for depth and distance estimates
+- **Visualizations**: Generates depth maps, 3D positioning visualizations, and annotated images
+- **Camera Support**: Pre-configured for various GoPro models with customizable parameters
+- **Interactive Mode**: Click on images to instantly get GPS coordinates
+- **Batch Processing**: Process multiple points in one command
+
+## Installation
+
+```bash
+# From PyPI (when published)
+pip install mimirmap
+
+# From source
+git clone https://github.com/joaquinolivera/Mimirmap.git
+cd mimirmap
+pip install -e .
+```
+
+## Dependencies
+
+- PyTorch
+- OpenCV
+- NumPy
+- SciPy
+- Matplotlib
+- PyProj
+
+## Basic Usage
+
+### Command Line Interface
+
+```bash
+# Basic usage
+mimirmap image.jpg 640 480 -34.636059 -58.706453 --output-dir ./output
+
+# With more options
+mimirmap image.jpg 640 480 -34.636059 -58.706453 \
+  --altitude 50.0 \
+  --camera-height 1.4 \
+  --pitch 12.0 \
+  --yaw 0.0 \
+  --camera-model HERO8 \
+  --method auto \
+  --save-depth \
+  --save-3d \
+  --verbose
+```
+
+### Python API
+
+```python
+from mimirmap.core import load_midas_model, estimate_object_gps
+
+# Load the MiDaS model
+model, transform = load_midas_model()
+
+# Estimate object GPS coordinates
+lat, lon, alt, confidence, distance, visualizations = estimate_object_gps(
+    image_path="path/to/image.jpg",
+    x=640, y=480,  # Pixel coordinates of the object
+    camera_lat=-34.636059, camera_lon=-58.706453, camera_alt=50.0,
+    camera_model="HERO8",
+    yaw=0.0, pitch=12.0, roll=0.0,
+    camera_height=1.4,
+    model=model, transform=transform,
+    visualize=True
+)
+
+print(f"Estimated GPS: {lat}, {lon}, {alt}")
+print(f"Estimated distance: {distance}m")
+print(f"Confidence: {confidence}")
+```
+
+## Interactive Example
+
+The library includes an example script demonstrating interactive use:
+
+```bash
+python -m examples.demo image.jpg --mode interactive
+```
+
+This opens a window where you can click on objects to get their estimated GPS coordinates.
+
+## Advanced Usage
+
+### Custom Camera Parameters
+
+```python
+from mimirmap.core import get_camera_parameters
+
+# Get intrinsic parameters for a specific camera model and resolution
+fx, fy, cx, cy = get_camera_parameters(
+    model="HERO9",
+    resolution=(3840, 2160)  # 4K resolution
+)
+```
+
+### Depth Map Visualization
+
+```python
+from mimirmap.core import load_midas_model, estimate_depth, save_depth_heatmap
+
+# Load model and estimate depth
+model, transform = load_midas_model()
+img, depth_map, ref_pixel, ref_distance = estimate_depth(
+    "image.jpg", model, transform,
+    auto_calibrate=True
+)
+
+# Save depth visualization
+save_depth_heatmap(
+    depth_map,
+    "depth_visualization.jpg",
+    reference_pixel=ref_pixel,
+    reference_distance=ref_distance
+)
+```
+
+### 3D Positioning Visualization
+
+```python
+from mimirmap.core import visualize_3d_position
+import numpy as np
+
+# Create a 3D visualization of camera and object position
+camera_coords = np.array([0, 0, 0])  # Origin
+object_coords = np.array([5, 10, -2])  # Object position in ENU coordinates
+
+visualize_3d_position(
+    camera_coords,
+    object_coords,
+    output_path="3d_position.jpg"
+)
+```
+
+## How It Works
+
+MimirMap combines deep learning-based depth estimation with geometric calculations to estimate the position of objects in 3D space:
+
+1. **Depth Estimation**: Uses MiDaS to generate a depth map from a single image
+2. **Auto-Calibration**: Uses ground plane geometry to calibrate the depth map to real-world scale
+3. **3D Position**: Converts pixel coordinates and depth to 3D coordinates in camera space
+4. **Orientation Adjustment**: Applies camera orientation (yaw, pitch, roll) to get world coordinates
+5. **GPS Projection**: Projects the 3D position to GPS coordinates based on camera location
+
+## Supported Camera Models
+
+The library includes pre-configured parameters for several GoPro models:
+
+- HERO7
+- HERO8
+- HERO9
+- HERO10
+
+For other cameras, you can use the default parameters or specify custom ones.
+
+## Limitations
+
+- Depth estimation accuracy depends on the MiDaS model's performance
+- Best results are achieved with objects on the ground plane
+- Camera height and orientation parameters should be accurate for best results
+- Results may vary depending on lighting conditions and image quality
+
+## License
+
+MIT License
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Citation
+
+If you use this library in your research, please cite:
+
+```
+@software{mimirmap2025,
+  author = {Your Name},
+  title = {MimirMap: GPS Estimation from Monocular Images},
+  year = {2025},
+  url = {https://github.com/yourusername/mimirmap}
+}
+```
+
+
+
+================================================================
+End of Codebase
+================================================================
