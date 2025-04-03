@@ -2,8 +2,6 @@
 
 **MimirMap** is a Python library for estimating GPS coordinates of objects from a single monocular image using deep learning and geometric calculations. The library leverages the MiDaS depth estimation model and ground plane geometry to provide accurate distance and position estimation.
 
-![MimirMap Example](https://via.placeholder.com/800x400?text=MimirMap+Example)
-
 ## Features
 
 - **Depth Estimation**: Uses Intel's MiDaS model to estimate depth from a single image
